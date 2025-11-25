@@ -1,0 +1,73 @@
+name: Build & Push Images to GHCR
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["images/**"]
+    tags: ["*-v*.*.*"]     # triggera release su tag versione
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write  # necessario per pushare su GHCR :contentReference[oaicite:1]{index=1}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - postgres
+          # aggiungi qui le future immagini
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}  # token built-in ok :contentReference[oaicite:2]{index=2}
+
+      # builda solo se la cartella è cambiata (su main)
+      - name: Detect changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            this:
+              - images/${{ matrix.image }}/**
+
+      # --- METADATA / TAGGING ---
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            # su main: tag SHA (immutabile) + latest
+            type=sha,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+            # su release tag git "*-vX.Y.Z": usa solo la versione X.Y.Z
+            type=match,pattern=(.*)-v(\d+\.\d+\.\d+),group=2,enable={{is_tag}}
+
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}  # link package->repo :contentReference[oaicite:3]{index=3}
+
+      - name: Build & push
+        if: steps.changes.outputs.this == 'true' || startsWith(github.ref, 'refs/tags/')
+        uses: docker/build-push-action@v6
+        with:
+          context: ./images/${{ matrix.image }}
+          file: ./images/${{ matrix.image }}/Dockerfile
+          push: true
+          platforms: linux/amd64  # aggiungi linux/arm64 quando ti serve
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
